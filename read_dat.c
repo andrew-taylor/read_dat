@@ -1,6 +1,6 @@
 /*
 
-read_dat v0.1  - extract the audio and subcode data from a DAT tape
+read_dat v0.2  - extract the audio and subcode data from a DAT tape
 
 SYNOPSIS
 
@@ -17,13 +17,24 @@ See http://www.cse.unsw.edu.au/~andrewt/read_dat/ for the latest version
 of this program.
 
 See http://www.btinternet.com/~big.bubbles/personal/ade/dat-dds/drives.html
-for more information about audio-capable DDS drives.
+and http://www.zianet.com/jgray/dat/index.html for more information about
+audio-capable DDS drives.
 
 OPTIONS
 
+-d  --ignore_date_time
+	Don't start a new track if the date/time jumps.
+	
 -m seconds  --minimum_track_length seconds
-	Track less than this length will be ignored.  The value is a double.
+	Tracks less than this length will be ignored.  The value is a double.
 	Default is 1.0 seconds.
+
+-M seconds  --maximum_track_length seconds
+	Do not create tracks longer than this number of seconds.  The value is a double.
+	A new track will be started if this limit is reached. Default is 360000.0 seconds.
+
+-n  --ignore_program_number
+	Don't start a new track if the program number changes.
 
 -p filename-prefix	--prefix filename-prefix
 	Create WAV files named filename-prefix0.wav, filename-prefix1.wav ...
@@ -32,6 +43,10 @@ OPTIONS
 -q	--quiet
 	Turn off warnings.
 	
+-r seconds  --read_n_seconds seconds
+	Read at most this number of seconds of audio.
+	Default is 360000.0 seconds.
+
 -v verbosity-level	--verbose verbosity-level
 	Print extra information.  The higher the level specified the more 
 	information printed.  Verbosity-level should be in the range 1..5 
@@ -82,7 +97,10 @@ http://www.hoxnet.com/dat-tools/datlib/ for a version modified for Linux.
 No code from DATlib has been incorporated in this program but DATlib
 provided invaluable information about the format of DAT tapes.
 
-I have not had access to a specification of the Audio DAT format.
+See http://www.zianet.com/jgray/dat/notes.html for some explanation of
+the DAT data format.
+
+I have not had access to a complete specification of the Audio DAT format.
 This is what I've been able to infer:
 
 Data on in an audio DAT tape is laid out in 5822 byte frames.
@@ -154,7 +172,7 @@ for an operational description of  the format of the last 62 bytes.
 #define WAV_HEADER_LENGTH 44
 
 void usage(void);
-void parse_frame(unsigned char *frame);
+int parse_frame(unsigned char *frame);
 void parse_subcodepack(unsigned char *frame, int pack_index, time_t *next_date_time);
 void write_frame_audio(unsigned char *frame);
 void write_frame_nonlinear_audio(unsigned char *frame);
@@ -171,18 +189,26 @@ int unBCD(unsigned int i);
 char *decode_sampfreq[] = {"48kHz","44.1kHz","32kHz","reserved"};
 char *decode_numchans[] = {"2 channels","4 channels","reserved","reserved"};
 char *decode_quantization[] = {"16-bit linear","12-bit non-linear","reserved","reserved"};
-char *decode_subcodeid[] = {"unused", "Program time","Absolute time","Running Time","Table of Contents","Date","Catalog","Catalog Number","International Standard Recording Code","Pro Binary"};
+char *decode_emphasis[] = {"none", "pre-emphasis"};
+char *decode_subcodeid[] = {"Unused", "Program time","Absolute time","Running Time","Table of Contents","Date","Catalog","Catalog Number","International Standard Recording Code","Pro Binary"};
 char *decode_weekday[] = {"Sun", "Mon","Tue","Wed","Thu","Fri","Sat"};
 
-static int print_warnings = 1;
+static int option_print_warnings = 1;
+static int option_segment_on_datetime = 1;
+static int option_segment_on_program_number = 1;
+
 static int verbosity = 0;
-static int frame_counter = 0;
-static int skip_n_frames = 0;
 static double min_track_seconds = 1.0;
+static double max_track_seconds = 360000.0;   /* 100 hours should be longer than any track or tape */
+static double max_audio_seconds_read = 360000.0;
 static char *filename_prefix = "";
 static char *myname;
-static char *version = "0.1";
+static char *version = "0.2";
 static int little_endian;
+
+static int skip_n_frames = 0;
+static int frame_counter = 0;
+static double audio_seconds_read = 0;
 
 static int track_number = 0;
 static int track_frame_count = -1;
@@ -192,26 +218,30 @@ static int track_nSamples;
 static int track_nChannels = 2;
 static int track_sampling_frequency = 48000;
 static int track_encoding = 0;
+static int track_emphasis = 0;
 static int track_program_number = -1;
 static int track_first_frame = -1;
 static int track_last_frame = -1;
 static time_t track_first_date_time = -1;
 static time_t track_last_date_time = -1;
 
-static struct option long_options[] =
-{
+static struct option long_options[] = {
+	{"ignore_date_time", 0, 0, 'd'},
 	{"minimum_track_length", 1, 0, 'm'},
+	{"maximum_track_length", 1, 0, 'M'},
+	{"ignore_program_number", 0, 0, 'n'},
 	{"prefix", 1, 0, 'p'},
 	{"quiet", 0, 0, 'q'},
+	{"read_n_seconds", 1, 0, 'r'},
 	{"verbose", 1, 0, 'v'},
-	{"version", 1, 0, 'V'},
+	{"version", 0, 0, 'V'},
 	{0, 0, 0, 0}
 };
 
 
 void
 usage(void) {
-	fprintf(stderr, "Usage: %s [-m minimum_track_length] [-p filename-prefix] [-q] [-v verbosity-level] input-device-or-file\n", myname);
+	fprintf(stderr, "Usage: %s [-d] [-m minimum_track_length]  [-M maximum_track_length] [-n] [-p filename-prefix] [-r tape_seconds] [-q] [-v verbosity-level] input-device-or-file\n", myname);
     exit(1);
 }
 
@@ -231,18 +261,30 @@ main(int argc, char *argv[]) {
 
 	while (1) {
 		int option_index;
-		int c = getopt_long (argc, argv, "v:m:p:q", long_options, &option_index);
+		int c = getopt_long (argc, argv, "dm:M:np:qr:v:V", long_options, &option_index);
 		if (c == -1)
 			break;
 		switch (c) {
+		case 'd':
+			option_segment_on_datetime = 0;
+			break;
 		case 'm':
 			min_track_seconds = atof(optarg);
+			break;
+		case 'M':
+			max_track_seconds = atof(optarg);
+			break;
+		case 'n':
+			option_segment_on_program_number = 0;
 			break;
 		case 'p':
 			filename_prefix = optarg;
 			break;
 		case 'q':
-			print_warnings = 0;
+			option_print_warnings = 0;
+			break;
+		case 'r':
+			max_audio_seconds_read = atof(optarg);
 			break;
 		case 'v':
 			verbosity = atoi(optarg);
@@ -276,7 +318,8 @@ main(int argc, char *argv[]) {
 					die("read failed (short)");
 				}
 			}
-			parse_frame(buffer);
+			if (!parse_frame(buffer))
+				break;
 		}
 	}
 	return 0;
@@ -295,7 +338,7 @@ warn(char *message) {
 	static char last_track_number = -1;
 	static char *last_message = "";
 	
-	if (!print_warnings)
+	if (!option_print_warnings)
 		return;
 	if (track_number == last_track_number && strcmp(message, last_message) == 0)
 		return;
@@ -305,9 +348,10 @@ warn(char *message) {
 }
 
 /*
- * process one frame (5822 bytes) of data 
+ * process one frame (5822 bytes) of data,
+ * return 0 if no more input should be read
  */
-void
+int
 parse_frame(unsigned char *frame) {
 	unsigned char	*scode = frame+DATA_SIZE;
 	unsigned char	*subid = scode+7*8;
@@ -338,14 +382,14 @@ parse_frame(unsigned char *frame) {
 	if (skip_n_frames-- > 0) {
 		if (verbosity >= 3)
 			printf("Skipping frame %d\n", frame_counter);
-		return;
+		return 1;
 	}
 	
 	if (dataid != 0) {
 		if (verbosity >= 1)
 			printf("Closing track %d and exiting because because non-zero data-id indicating non-audio data encountered\n", track_number);
 		close_track();
-		exit(0);
+		return 0;
 	}
 	
 	if ((ctrlid != 0 && verbosity >= 3) || verbosity >= 4)
@@ -401,26 +445,27 @@ parse_frame(unsigned char *frame) {
 
 	track_finished = 0;
 	if (track_fd != -1) {
-		if (next_date_time != -1 && (next_date_time > track_last_date_time + 1 || next_date_time < track_last_date_time)) {
-			if (verbosity >= 2)
-				printf("Closing track %d because of jump in subcode date/time to %s", track_number, ctime(&next_date_time));
+		char *reason = NULL;
+		
+		if (option_segment_on_datetime && next_date_time != -1 && (next_date_time > track_last_date_time + 1 || next_date_time < track_last_date_time))
+			reason = "change in jump in subcode date/time";
+		else if (next_nChannels != track_nChannels)
+			reason = "change in number of channels";
+		else if (next_sampling_frequency != track_sampling_frequency)
+			reason = "change in sampling frequency";
+		else if (option_segment_on_program_number && track_program_number != -1 && next_program_number != -1 && next_program_number != track_program_number)
+			reason = "change in change in program number";
+		else if (track_encoding != encoding)
+			reason = "change in change in encoding";
+		else if (track_emphasis != emphasis)
+			reason = "change in emphasis";
+		else if (track_nSamples/(double)track_sampling_frequency >= max_track_seconds)
+			reason = "maximum track length being exceeded";
+
+		if (reason != NULL) {
 			track_finished = 1;
-		} else if (next_nChannels != track_nChannels) {
 			if (verbosity >= 2)
-				printf("Closing track %d because of change in number of channels\n", track_number);
-			track_finished = 1;
-		} else if (next_sampling_frequency != track_sampling_frequency) {
-			if (verbosity >= 2)
-				printf("Closing track %d because of change in sampling frequency\n", track_number);
-			track_finished = 1;
-		} else if (track_program_number != -1 && next_program_number != -1 && next_program_number != track_program_number) {
-			if (verbosity >= 2)
-				printf("Closing track %d because of change in program number\n", track_number);
-			close_track();
-		} else if (track_encoding != encoding) {
-			if (verbosity >= 2)
-				printf("Closing track %d because of change in encoding\n", track_number);
-			track_finished = 1;
+				printf("Closing track %d because %s\n", track_number, reason);
 		}
 	}
 
@@ -432,11 +477,11 @@ parse_frame(unsigned char *frame) {
 		 * incorrect date or encoding information.
 		 */
 		skip_n_frames = 1;
-		return;
+		return 1;
 	}
 	
 	if (hex_pno == 0x0bb)
-		return;
+		return 1;
 
 	if (track_fd == -1)
 		open_track();
@@ -451,10 +496,18 @@ parse_frame(unsigned char *frame) {
 	track_nChannels = next_nChannels;
 	track_nChannels = next_nChannels;
 	track_encoding = encoding;
+	track_emphasis = emphasis;
 	if (next_program_number != -1)
 		track_program_number = next_program_number;
 		
 	write_frame_audio(frame);
+	if (audio_seconds_read >= max_audio_seconds_read) {
+		if (verbosity >= 1)
+			printf("Closing track %d and exiting, limit of %.2f seconds reached\n", track_number, max_audio_seconds_read);
+		close_track();
+		return 0;
+	}
+	return 1;
 }
 
 /*
@@ -533,7 +586,6 @@ write_frame_audio(unsigned char *frame) {
 		write_frame_nonlinear_audio(frame);
 		return;
 	}
-	
 	switch (track_sampling_frequency) {
 	case 48000:
 		n = SOUND_DATA_SIZE_48KHZ;
@@ -549,8 +601,9 @@ write_frame_audio(unsigned char *frame) {
 	
 	default:
 		die("internal error invalid track_sampling_frequency in write_frame_audio");
-	}	
-		
+	}
+	
+	
 	/*
 	 * rewrite this so this works on big-endian machines
 	 */
@@ -565,9 +618,11 @@ write_frame_audio(unsigned char *frame) {
 	if (write(track_fd, frame, n) != n)
 			die("write");
 	track_nSamples += n / (2 * track_nChannels);
+	audio_seconds_read += ((double)(n / (2 * track_nChannels)))/track_sampling_frequency;
 	track_last_frame = frame_counter;
 	return;
 }
+
 extern short decode_lp_sample[];
 extern short translate_lp_frame_index[];
 
@@ -587,6 +642,7 @@ write_frame_nonlinear_audio(unsigned char *frame) {
 	if (write(track_fd, buffer, SOUND_DATA_SIZE_32KHZ_NONLINEAR_UNPACKED) != SOUND_DATA_SIZE_32KHZ_NONLINEAR_UNPACKED)
 			die("write");
 	track_nSamples += SOUND_DATA_SIZE_32KHZ_NONLINEAR_UNPACKED / (2 * track_nChannels);
+	audio_seconds_read += ((double)(SOUND_DATA_SIZE_32KHZ_NONLINEAR_UNPACKED / (2 * track_nChannels)))/track_sampling_frequency;
 	track_last_frame = frame_counter;
 }
 
@@ -673,6 +729,7 @@ write_track_details() {
 	fprintf(details_fp, "Channels: %d\n", track_nChannels);
 	fprintf(details_fp, "Samples: %d\n", track_nSamples);
 	fprintf(details_fp, "Quantization: %s\n", decode_quantization[track_encoding]);
+	fprintf(details_fp, "Emphasis: %s\n", decode_emphasis[track_emphasis]);
 	if (track_program_number != -1)
 		fprintf(details_fp, "Program_number: %d\n", track_program_number);
 	fprintf(details_fp, "First date: %s", ctime(&track_first_date_time));

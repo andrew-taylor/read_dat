@@ -158,6 +158,7 @@ for an operational description of  the format of the last 62 bytes.
 #include <fcntl.h>
 #include <string.h>
 #include <getopt.h>
+#include <utime.h>
 #include <errno.h>
 
 
@@ -737,6 +738,15 @@ open_track(frame_info_t *info) {
 		die("Can not write to file");
 }
 
+void
+adjust_creation_time(char *filename) {
+	struct utimbuf u;
+	if (track_first_date_time > 0) {
+		u.actime = track_first_date_time;
+		u.modtime = track_first_date_time;
+		utime(filename, &u);
+	}
+}	
 /*
  * finish a track
  */
@@ -771,6 +781,8 @@ close_track() {
 		if (write(track_fd, get_16bit_WAV_header(track_nSamples, track_info.nChannels, track_info.sampling_frequency), WAV_HEADER_LENGTH) != WAV_HEADER_LENGTH)
 			die("Can not write to file");
 		close(track_fd);
+		adjust_creation_time(track_filename);
+		write_track_details();
 		create_filename("wav", new_track_filename);
 		if (strcmp(track_filename, new_track_filename) != 0) {
 			if (verbosity > 0)
@@ -778,7 +790,6 @@ close_track() {
 			if (rename(track_filename, new_track_filename) != 0)
 				die("can not rename track filename");
 		}
-		write_track_details();
 		track_number++;
 	}
 	track_fd = -1;
@@ -812,6 +823,7 @@ write_track_details() {
 	fprintf(details_fp, "First frame: %d\n", track_first_frame);
 	fprintf(details_fp, "Last frame: %d\n", track_info.frame_number);
 	fclose(details_fp);
+	adjust_creation_time(details_filename);
 }	
 
 /*

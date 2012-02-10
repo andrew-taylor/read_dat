@@ -227,13 +227,14 @@ static int option_segment_on_program_number = 1;
 
 static int skip_frames_on_segment_change = 0;
 static int verbosity = 1;
+static off_t seek_n_frames = 0;
 static double min_track_seconds = 1.0;
 static double max_track_seconds = 360000.0;   /* 100 hours should be longer than any track or tape */
 static double max_audio_seconds_read = 360000.0;
 static int max_consecutive_nonaudio_frames = 10;
 static char *filename_prefix = "";
 static char *myname;
-static char *version = "0.3";
+static char *version = "0.5";
 static int little_endian;
 
 static int skip_n_frames = 0;
@@ -259,6 +260,7 @@ static struct option long_options[] = {
 	{"quiet", 0, 0, 'q'},
 	{"read_n_seconds", 1, 0, 'r'},
 	{"skip_n_frames", 1, 0, 's'},
+	{"seek_n_frames", 1, 0, 'S'},
 	{"verbose", 1, 0, 'v'},
 	{"version", 0, 0, 'V'},
 	{0, 0, 0, 0}
@@ -268,7 +270,7 @@ extern short decode_lp_sample[4096];
 
 void
 usage(void) {
-	fprintf(stderr, "Usage: %s [-a frame_count] [-d] [-m minimum_track_length]  [-M maximum_track_length] [-n] [-p filename-prefix] [-r tape_seconds] [-s frames] [-q] [-v verbosity-level] input-device-or-file\n", myname);
+	fprintf(stderr, "Usage: %s [-a frame_count] [-d] [-m minimum_track_length]  [-M maximum_track_length] [-n] [-p filename-prefix] [-r tape_seconds] [-s frames] [-S frames] [-q] [-v verbosity-level] input-device-or-file\n", myname);
     exit(1);
 }
 
@@ -292,7 +294,7 @@ main(int argc, char *argv[]) {
 
 	while (1) {
 		int option_index;
-		int c = getopt_long (argc, argv, "a:dm:M:np:qr:s:v:V", long_options, &option_index);
+		int c = getopt_long (argc, argv, "a:dm:M:np:qr:s:S:v:V", long_options, &option_index);
 		if (c == -1)
 			break;
 		switch (c) {
@@ -320,10 +322,14 @@ main(int argc, char *argv[]) {
 		case 'r':
 			max_audio_seconds_read = atof(optarg);
 			break;
-			
 		case 's':
 			skip_frames_on_segment_change = atoi(optarg);
 			if (skip_frames_on_segment_change < 0)
+				usage();
+			break;
+		case 'S':
+			seek_n_frames = atoi(optarg);
+			if (seek_n_frames < 0)
 				usage();
 			break;
 		case 'v':
@@ -351,16 +357,34 @@ process_file(char *filename) {
 	int fd, n;
 	unsigned char buffer[FRAME_SIZE], next_buffer[FRAME_SIZE];
 	frame_info_t info, next_info;
-	int frame_number;
+	int frame_number = 0;
 	
 	if ((fd = open(filename, O_RDONLY)) < 0)
 		die("Can not open input");
-	
+	if (seek_n_frames) {
+		if (verbosity > 0)
+			printf("Seeking %d frames\n", (int)seek_n_frames);
+		off_t seek_bytes = seek_n_frames*FRAME_SIZE;
+		off_t seek_result = lseek(fd, seek_bytes, SEEK_SET);
+		if (seek_result == seek_bytes) {
+			if (verbosity > 1)
+				printf("Seek succeeded\n");
+			frame_number = seek_n_frames;
+		} else if (seek_result <= 0) {
+			if (verbosity > 0)
+				printf("Seeking not possible reading %d frames\n", (int)seek_n_frames);
+			for (;frame_number < seek_n_frames;frame_number++) {
+				if (read(fd, buffer, FRAME_SIZE) != FRAME_SIZE)
+					die("read failed");
+			}
+		} else
+			die("can not recover from partial seek"); 
+	}	
 	if ((n = read(fd, buffer, FRAME_SIZE)) != FRAME_SIZE)
-		die("read of frame 0 failed");
-	info.frame_number = 0;
+		die("read of first frame failed");
+	info.frame_number = frame_number++;
 	parse_frame(buffer, &info);
-	for (frame_number = 1;;frame_number++) {
+	for (;;frame_number++) {
 		if ((n = read(fd, next_buffer, FRAME_SIZE)) != FRAME_SIZE) {
 			switch (n) {
 			case -1:

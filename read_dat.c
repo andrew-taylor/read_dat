@@ -234,7 +234,7 @@ static double max_audio_seconds_read = 360000.0;
 static int max_consecutive_nonaudio_frames = 10;
 static char *filename_prefix = "";
 static char *myname;
-static char *version = "0.5";
+static char *version = "0.6";
 static int little_endian;
 
 static int skip_n_frames = 0;
@@ -730,7 +730,7 @@ write_frame_nonlinear_audio(unsigned char *frame, frame_info_t *info) {
 void
 create_filename(char *suffix, char *filename) {
 	if (track_first_date_time > 0) {
-		struct tm *t = gmtime(&track_first_date_time);
+		struct tm *t = localtime(&track_first_date_time);
 		if (snprintf(filename, MAX_FILENAME, "%s%4d-%02d-%02d-%02d-%02d-%02d.%s", filename_prefix, t->tm_year+1900, t->tm_mon+1, t->tm_mday, t->tm_hour, t->tm_min, t->tm_sec, suffix) == -1)
 			die("filename too long");
 	} else {

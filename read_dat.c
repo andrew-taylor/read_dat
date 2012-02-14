@@ -553,7 +553,7 @@ process_frame(unsigned char *frame, frame_info_t *info, frame_info_t *next_info)
 					printf("Skipping frame %d because of non-audio dataid\n", info->frame_number);
 	 			if (track_fd != -1) {
 					if (verbosity >= 1)
-						printf("Closing track %d because %d frames of non-audio data encountered\n", consecutive_nonaudio_frames, track_number);
+						printf("Closing track %d because %d frames of non-audio data encountered\n", track_number, consecutive_nonaudio_frames);
 					close_track();
 				}
 			} else {

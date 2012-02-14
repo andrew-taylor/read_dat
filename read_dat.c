@@ -20,9 +20,13 @@ audio-capable DDS drives.
 
 OPTIONS
 
--a  --max_nonaudio
+-a  --max_nonaudio_tape
 	Maximum number of consecutive non-audio frames before program exits.
 	Default is 10.
+	
+-A  --max_nonaudio_track
+	Maximum number of consecutive non-audio frames before track closed
+	Default is 0.
 	
 -d  --ignore_date_time
 	Don't start a new track if the date/time jumps.
@@ -144,7 +148,7 @@ frame[5816..5819] contains the "sub-id".
 frame[5820..5821] contains the "main-id".
 
 A description of the encoding of the last 62 bytes should go here but
-see the functions parse_frame, parse_subcodepack and write_audio_data
+see the functions parse_frame, parse_subcodepack
 for an operational description of  the format of the last 62 bytes.
 
 */
@@ -220,6 +224,9 @@ char *decode_quantization[] = {"16-bit linear","12-bit non-linear","reserved","r
 char *decode_emphasis[] = {"none", "pre-emphasis"};
 char *decode_subcodeid[] = {"Unused", "Program time","Absolute time","Running Time","Table of Contents","Date","Catalog","Catalog Number","International Standard Recording Code","Pro Binary"};
 char *decode_weekday[] = {"Sun", "Mon","Tue","Wed","Thu","Fri","Sat"};
+extern short decode_lp_sample[];
+extern short translate_lp_frame_index[];
+extern short decode_lp_sample[4096];
 
 static int option_print_warnings = 1;
 static int option_segment_on_datetime = 1;
@@ -231,7 +238,8 @@ static off_t seek_n_frames = 0;
 static double min_track_seconds = 1.0;
 static double max_track_seconds = 360000.0;   /* 100 hours should be longer than any track or tape */
 static double max_audio_seconds_read = 360000.0;
-static int max_consecutive_nonaudio_frames = 10;
+static int max_consecutive_nonaudio_frames_track = 0;
+static int max_consecutive_nonaudio_frames_tape = 10;
 static char *filename_prefix = "";
 static char *myname;
 static char *version = "0.6";
@@ -251,7 +259,8 @@ static time_t track_first_date_time = -1;
 static frame_info_t track_info;
 
 static struct option long_options[] = {
-	{"max_nonaudio", 1, 0, 'a'},
+	{"max_nonaudio_tape", 1, 0, 'a'},
+	{"max_nonaudio_track", 1, 0, 'a'},
 	{"ignore_date_time", 0, 0, 'd'},
 	{"minimum_track_length", 1, 0, 'm'},
 	{"maximum_track_length", 1, 0, 'M'},
@@ -266,11 +275,9 @@ static struct option long_options[] = {
 	{0, 0, 0, 0}
 };
 
-extern short decode_lp_sample[4096];
-
 void
 usage(void) {
-	fprintf(stderr, "Usage: %s [-a frame_count] [-d] [-m minimum_track_length]  [-M maximum_track_length] [-n] [-p filename-prefix] [-r tape_seconds] [-s frames] [-S frames] [-q] [-v verbosity-level] input-device-or-file\n", myname);
+	fprintf(stderr, "Usage: %s [-a frame_count] [-A frame_count] [-d] [-m minimum_track_length]  [-M maximum_track_length] [-n] [-p filename-prefix] [-r tape_seconds] [-s frames] [-S frames] [-q] [-v verbosity-level] input-device-or-file\n", myname);
     exit(1);
 }
 
@@ -294,12 +301,15 @@ main(int argc, char *argv[]) {
 
 	while (1) {
 		int option_index;
-		int c = getopt_long (argc, argv, "a:dm:M:np:qr:s:S:v:V", long_options, &option_index);
+		int c = getopt_long (argc, argv, "a:A:dm:M:np:qr:s:S:v:V", long_options, &option_index);
 		if (c == -1)
 			break;
 		switch (c) {
 		case 'a':
-			max_consecutive_nonaudio_frames = atoi(optarg);
+			max_consecutive_nonaudio_frames_tape = atoi(optarg);
+			break;
+		case 'A':
+			max_consecutive_nonaudio_frames_track = atoi(optarg);
 			break;
 		case 'd':
 			option_segment_on_datetime = 0;
@@ -527,27 +537,26 @@ process_frame(unsigned char *frame, frame_info_t *info, frame_info_t *next_info)
 	if (info->invalid != 2)
 		consecutive_nonaudio_frames = 0;
 	 else {
-	 	if (consecutive_nonaudio_frames++ >= max_consecutive_nonaudio_frames) {
+	 	if (consecutive_nonaudio_frames++ >= max_consecutive_nonaudio_frames_tape) {
 			close_track();
 			if (verbosity >= 1)
 				printf("Exiting because because %d consecutive frames of non-audio data encountered\n", consecutive_nonaudio_frames);
 			return 0;
 		} else {
-//			if (!frame_info_inconsistent(&track_info, info)) {
-//				if (verbosity >= 1)
-//					printf("Frame %d ignoring non audio dataid because other frame info consistent with previous frame\n", info->frame_number);
-//			} else
 			if (next_info->invalid != 2 && !frame_info_inconsistent(&track_info, next_info)) {
 				if (verbosity >= 1)
 					printf("Frame %d ignoring non audio dataid  because next frame is audio and its frame info is with previous frame\n", info->frame_number);
-			} else {
+			} else if (consecutive_nonaudio_frames >= max_consecutive_nonaudio_frames_track) {
 				if (verbosity > 1)
-					printf("Ignoring frame %d because of non-audio dataid\n", info->frame_number);
+					printf("Skipping frame %d because of non-audio dataid\n", info->frame_number);
 	 			if (track_fd != -1) {
 					if (verbosity >= 1)
-						printf("Closing track %d because non-audio data encountered\n", track_number);
+						printf("Closing track %d because %d frames of non-audio data encountered\n", consecutive_nonaudio_frames, track_number);
 					close_track();
 				}
+			} else {
+				if (verbosity >= 1)
+					printf("Ignoring non audio dataid on frame %d\n", info->frame_number);
 			}
 		}
 		return 1;
@@ -716,9 +725,6 @@ write_frame_audio(unsigned char *frame, frame_info_t *info) {
 	audio_seconds_read += ((double)(n / (2 * track_info.nChannels)))/track_info.sampling_frequency;
 	return;
 }
-
-extern short decode_lp_sample[];
-extern short translate_lp_frame_index[];
 
 void
 write_frame_nonlinear_audio(unsigned char *frame, frame_info_t *info) {

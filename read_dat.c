@@ -310,6 +310,8 @@ main(int argc, char *argv[]) {
 			break;
 		case 'A':
 			max_consecutive_nonaudio_frames_track = atoi(optarg);
+			if (max_consecutive_nonaudio_frames_tape < max_consecutive_nonaudio_frames_track)
+				max_consecutive_nonaudio_frames_tape = max_consecutive_nonaudio_frames_track;
 			break;
 		case 'd':
 			option_segment_on_datetime = 0;

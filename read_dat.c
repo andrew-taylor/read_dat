@@ -527,17 +527,29 @@ process_frame(unsigned char *frame, frame_info_t *info, frame_info_t *next_info)
 	if (info->invalid != 2)
 		consecutive_nonaudio_frames = 0;
 	 else {
-	 	if (track_fd != -1) {
-			if (verbosity >= 1)
-				printf("Closing track %d because non-audio data encountered\n", track_number);
-			close_track();
-		}
 	 	if (consecutive_nonaudio_frames++ >= max_consecutive_nonaudio_frames) {
+			close_track();
 			if (verbosity >= 1)
-				printf("Exiting because because non-audio data encountered\n");
+				printf("Exiting because because %d consecutive frames of non-audio data encountered\n", consecutive_nonaudio_frames);
 			return 0;
-		} else if (verbosity >= 1)
-			printf("Skipping non-audio frame %d\n", info->frame_number);
+		} else {
+//			if (!frame_info_inconsistent(&track_info, info)) {
+//				if (verbosity >= 1)
+//					printf("Frame %d ignoring non audio dataid because other frame info consistent with previous frame\n", info->frame_number);
+//			} else
+			if (next_info->invalid != 2 && !frame_info_inconsistent(&track_info, next_info)) {
+				if (verbosity >= 1)
+					printf("Frame %d ignoring non audio dataid  because next frame is audio and its frame info is with previous frame\n", info->frame_number);
+			} else {
+				if (verbosity > 1)
+					printf("Ignoring frame %d because of non-audio dataid\n", info->frame_number);
+	 			if (track_fd != -1) {
+					if (verbosity >= 1)
+						printf("Closing track %d because non-audio data encountered\n", track_number);
+					close_track();
+				}
+			}
+		}
 		return 1;
 	}
 

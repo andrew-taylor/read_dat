@@ -198,6 +198,7 @@ typedef struct frame_info {
 	time_t date_time;
 	int program_number;
 	int hex_pno;
+	int interpolate_flags;
 	int frame_number;
 } frame_info_t;
 
@@ -242,7 +243,7 @@ static int max_consecutive_nonaudio_frames_track = 0;
 static int max_consecutive_nonaudio_frames_tape = 10;
 static char *filename_prefix = "";
 static char *myname;
-static char *version = "0.6";
+static char *version = "0.7";
 static int little_endian;
 
 static int skip_n_frames = 0;
@@ -443,6 +444,7 @@ parse_frame(unsigned char *frame, frame_info_t *info) {
 	int pno1       = (subid[1] >> 4) & 0xf;
 	int pno2       = (subid[2] >> 4) & 0xf;
 	int pno3       = (subid[2] >> 0) & 0xf;
+	int interpolate_flags       = subid[3];
 	int hex_pno    = (pno1 << 8) | (pno2 << 4) | (pno3 << 0);
 	int bcd_pno    = pno1 * 100 + pno2 * 10 + pno3 * 1;
 	int pack_index;
@@ -453,6 +455,7 @@ parse_frame(unsigned char *frame, frame_info_t *info) {
 	info->nChannels = 2;
 	info->sampling_frequency = 48000;
 	info->hex_pno = hex_pno;
+	info->interpolate_flags = interpolate_flags;
 	
 	if (dataid) {
 		if (verbosity > 4)
@@ -460,6 +463,7 @@ parse_frame(unsigned char *frame, frame_info_t *info) {
 		info->invalid = 2;
 		return;
 	}
+	
 	if ((ctrlid != 0 && verbosity >= 3) || verbosity >= 4)
 		printf("Frame %d cntrlid=%d channels=%d samplerate=%d emphasis=%d fmtid=%d datapacket=%d scms=%d width=%d encoding=%d numpacks=%d id=%x pno=%x%x%x\n", info->frame_number, ctrlid, channels, samplerate, emphasis, fmtid, datapacket, scms, width, encoding, numpacks, subid[0], pno1,pno2, pno3);
 	
@@ -537,6 +541,26 @@ frame_info_inconsistent(frame_info_t *i1, frame_info_t *i2) {
  */
 int
 process_frame(unsigned char *frame, frame_info_t *info, frame_info_t *next_info) {
+	if (info->hex_pno == 0x0ee) {
+		if (verbosity >= 1)
+			printf("Frame %d end of tape reached (0x0EE pno found)\n", info->frame_number);
+		close_track();
+		return 0;
+	} else if (info->hex_pno == 0x0bb) {
+		if (verbosity > 1)
+			printf("Frame %d closing track 0x0BB pno seen\n", info->frame_number);
+		if (track_fd == -1) {
+			close_track();
+			if (verbosity > 1)
+				printf("Frame %d closing track 0x0BB pno seen\n", info->frame_number);
+		}
+		return 1;
+	}
+	if (info->interpolate_flags & (0x40|0x20)) {
+		if (verbosity > 1)
+			printf("Frame %d warning interpolate_flags set - ignoring\n", info->frame_number);
+	}
+
 	if (info->invalid != 2)
 		consecutive_nonaudio_frames = 0;
 	 else {
@@ -565,18 +589,6 @@ process_frame(unsigned char *frame, frame_info_t *info, frame_info_t *next_info)
 					printf("Ignoring non audio dataid on frame %d\n", info->frame_number);
 			}
 		}
-		return 1;
-	}
-
-	if (info->hex_pno == 0x0ee) {
-		if (verbosity >= 1)
-			printf("end of tape reached (0x0EE pno found)\n");
-		close_track();
-		return 0;
-	}
-	if (info->hex_pno == 0x0bb) {
-		if (verbosity > 3)
-			printf("skipping frame  (0x0BB pno found)\n");
 		return 1;
 	}
 

@@ -20,7 +20,7 @@ mt -f "$TAPE_DRIVE" rewind
 mt -f "$TAPE_DRIVE" status
 echo Reading tape into $TMP.2
 dd 'bs=5822' if="$TAPE_DRIVE" of="$TMP.2"
-echo adding errors for testing;add_error $TMP.2 >$TMP.2.errors && mv $TMP.2.errors $TMP.2
+#echo adding errors for testing;add_error $TMP.2 >$TMP.2.errors && mv $TMP.2.errors $TMP.2
 echo Tape read 
 ls -l "$TMP.2"
 echo Rewinding tape
@@ -28,7 +28,7 @@ mt -f "$TAPE_DRIVE" rewind
 mt -f "$TAPE_DRIVE" status
 echo Reading tape into $TMP.3
 dd 'bs=5822' if="$TAPE_DRIVE" of="$TMP.3"
-echo adding errors for testing;add_error $TMP.3 >$TMP.3.errors && mv $TMP.3.errors $TMP.3
+#echo adding errors for testing;add_error $TMP.3 >$TMP.3.errors && mv $TMP.3.errors $TMP.3
 echo Tape read 
 ls -l "$TMP.3"
 echo Rewinding tape

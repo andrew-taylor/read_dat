@@ -243,7 +243,7 @@ static int max_consecutive_nonaudio_frames_track = 0;
 static int max_consecutive_nonaudio_frames_tape = 10;
 static char *filename_prefix = "";
 static char *myname;
-static char *version = "0.7";
+static char *version = "0.8";
 static int little_endian;
 
 static int skip_n_frames = 0;
@@ -538,6 +538,10 @@ frame_info_inconsistent(frame_info_t *i1, frame_info_t *i2) {
 /*
  * process one frame (5822 bytes) of data,
  * return 0 if no more input should be read
+ *
+ * this function should never skip a frame in the middle of a track
+ * if their problems with a frame they can either be ignored
+ * or the track closed and the frame skipped
  */
 int
 process_frame(unsigned char *frame, frame_info_t *info, frame_info_t *next_info) {
@@ -547,12 +551,13 @@ process_frame(unsigned char *frame, frame_info_t *info, frame_info_t *next_info)
 		close_track();
 		return 0;
 	} else if (info->hex_pno == 0x0bb) {
-		if (verbosity > 1)
-			printf("Frame %d closing track 0x0BB pno seen\n", info->frame_number);
-		if (track_fd == -1) {
+		if (track_fd != -1) {
 			close_track();
-			if (verbosity > 1)
+			if (verbosity >= 1)
 				printf("Frame %d closing track 0x0BB pno seen\n", info->frame_number);
+		} else {
+			if (verbosity > 1)
+				printf("Ignoring frame %d - 0x0BB pno\n", info->frame_number);
 		}
 		return 1;
 	}
@@ -577,7 +582,7 @@ process_frame(unsigned char *frame, frame_info_t *info, frame_info_t *next_info)
 			}
 			if (next_info->invalid != 2 && !frame_info_inconsistent(&track_info, next_info)) {
 				if (verbosity >= 1)
-					printf("Frame %d ignoring non audio dataid  because next frame is audio and its frame info is with previous frame\n", info->frame_number);
+					printf("Frame %d ignoring non audio dataid  because next frame is audio and its frame info is consistent with previous frame\n", info->frame_number);
 			} else if (consecutive_nonaudio_frames >= max_consecutive_nonaudio_frames_track) {
 				if (verbosity > 1)
 					printf("Skipping frame %d because of non-audio dataid\n", info->frame_number);
@@ -589,7 +594,6 @@ process_frame(unsigned char *frame, frame_info_t *info, frame_info_t *next_info)
 					printf("Ignoring non audio dataid on frame %d\n", info->frame_number);
 			}
 		}
-		return 1;
 	}
 
 	if (track_fd != -1) {

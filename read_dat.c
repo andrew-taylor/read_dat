@@ -258,6 +258,7 @@ static int track_frame_count = -1;
 static int track_fd = -1;
 char track_filename[MAX_FILENAME];
 static int track_nSamples;
+static int track_invalid_frames;
 static int track_first_frame = -1;
 static time_t track_first_date_time = -1;
 static frame_info_t track_info;
@@ -406,13 +407,20 @@ process_file(char *filename) {
 			case 0:
 				process_frame(buffer, &info, &info);// hack to handle last frame
 				close_track();
+				exit(0);
 			default:
-				die("read returned only a partial frame");
+				close_track();
+				die("read returned only a partial frame (%d bytes) - %d frames previously read", n, frame_number);
 			}
 			break;
 		}
 		next_info.frame_number = frame_number;
 		parse_frame(next_buffer, &next_info);
+		if (next_info.hex_pno == 0xbb && frame_number < 4) {
+			// hack so we number frames from first non lead in frame
+			frame_number = -1;
+			next_info.frame_number = -1;
+		}
 		if (!process_frame(buffer, &info, &next_info))
 			return;
 		memcpy(buffer, next_buffer, sizeof buffer);
@@ -542,6 +550,7 @@ frame_info_inconsistent(frame_info_t *i1, frame_info_t *i2) {
  */
 int
 process_frame(unsigned char *frame, frame_info_t *info, frame_info_t *next_info) {
+	int invalid_frame = info->invalid != 0;
 	if (info->hex_pno == 0x0ee) {
 		dp(2, "Frame %d end of tape reached (0x0EE pno found)\n", info->frame_number);
 		close_track();
@@ -554,9 +563,6 @@ process_frame(unsigned char *frame, frame_info_t *info, frame_info_t *next_info)
 			dp(2, "Ignoring frame %d - 0x0BB pno\n", info->frame_number);
 		}
 		return 1;
-	}
-	if (info->interpolate_flags & (0x40|0x20)) {
-		dp(1, "Frame %d warning interpolate_flags set - ignoring\n", info->frame_number);
 	}
 
 	if (info->invalid != 2)
@@ -582,7 +588,10 @@ process_frame(unsigned char *frame, frame_info_t *info, frame_info_t *next_info)
 			}
 		}
 	}
-
+	if (info->interpolate_flags & (0x40|0x20)) {
+		dp(1, "Frame %d warning interpolate flags set indicating audio contains errors\n", info->frame_number);
+		invalid_frame = 1;
+	}
 	if (track_fd != -1) {
 		char *reason = frame_info_inconsistent(&track_info, info);
 		if (reason != NULL && !frame_info_inconsistent(&track_info, next_info)) {
@@ -593,6 +602,7 @@ process_frame(unsigned char *frame, frame_info_t *info, frame_info_t *next_info)
 			info->emphasis = next_info->emphasis;
 			info->program_number = next_info->program_number;
 			info->date_time = next_info->date_time;
+			invalid_frame = 1;
 			reason = NULL;
 		}
 		if (reason != NULL) {
@@ -617,7 +627,9 @@ process_frame(unsigned char *frame, frame_info_t *info, frame_info_t *next_info)
 			track_first_date_time = info->date_time;
 	}
 	if (info->program_number != -1 && track_info.program_number == -1)
-		track_info.program_number = info->program_number;
+		track_info.program_number = info->program_number;	
+	track_invalid_frames += invalid_frame;
+
 	write_frame_audio(frame, info);
 	if (audio_seconds_read >= max_audio_seconds_read) {
 		dp(1, "Closing track %d and exiting, limit of %.2f seconds reached\n", track_number, max_audio_seconds_read);
@@ -656,7 +668,7 @@ parse_subcodepack(unsigned char *frame, int pack_index, frame_info_t *info) {
 	case 1:
 	case 2:
 	case 3:
-		if ((pack[3] != 0xAA && verbosity > 2) || verbosity > 3)
+		if ((pack[3] != 0xAA && verbosity > 3) || verbosity > 4)
 			printf("Frame %d Subcode[%d] %s: indexnr=%d %d:%d:%d frame=%d\n", info->frame_number, pack_index, decode_subcodeid[id], unBCD(pack[2]), unBCD(pack[3]), unBCD(pack[4]), unBCD(pack[5]), unBCD(pack[6]));
 		break;
 	case 5:
@@ -767,6 +779,7 @@ open_track(frame_info_t *info) {
 	if (track_fd != -1)
 		die("internal error open_track previous track not closed");
 	track_nSamples = 0;
+	track_invalid_frames = 0;
 	track_info = *info;
 	track_first_frame = info->frame_number;
 	track_first_date_time = info->date_time;
@@ -862,6 +875,7 @@ write_track_details() {
 	fprintf(details_fp, "Last date: %s", ctime(&(track_info.date_time)));
 	fprintf(details_fp, "First frame: %d\n", track_first_frame);
 	fprintf(details_fp, "Last frame: %d\n", track_info.frame_number);
+	fprintf(details_fp, "Invalid frames: %d\n", track_invalid_frames);
 	fclose(details_fp);
 	adjust_creation_time(details_filename);
 }	

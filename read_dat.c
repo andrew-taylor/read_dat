@@ -57,6 +57,10 @@ OPTIONS
 	Skip n frames on segment change.
 	Default is 0.
 
+-S frames	--seek_n_frames
+	Skip (seek) oever the first  n frames of the tape
+	Default is 0.
+
 -v verbosity-level	--verbose verbosity-level
 	Print extra information.  The higher the level specified the more 
 	information printed.  Verbosity-level should be in the range 1..5 
@@ -213,6 +217,7 @@ void write_frame_nonlinear_audio(unsigned char *frame, frame_info_t *info);
 void open_track(frame_info_t *info);
 void close_track();
 void write_track_details();
+void print_frame_time(int frame_number, FILE *fp);
 void warn(char *);
 void die(char *format, ...);
 int dp(int level, char *format, ...);
@@ -246,7 +251,7 @@ static int max_consecutive_nonaudio_frames_track = 0;
 static int max_consecutive_nonaudio_frames_tape = 10;
 static char *filename_prefix = "";
 static char *myname;
-static char *version = "0.8";
+static char *version = "0.9";
 static int little_endian;
 
 static int skip_n_frames = 0;
@@ -256,11 +261,15 @@ static int consecutive_nonaudio_frames = 0;
 static int track_number = 0;
 static int track_frame_count = -1;
 static int track_fd = -1;
+static FILE *track_invalid_frames_fp = NULL;
 char track_filename[MAX_FILENAME];
+char track_invalid_frames_filename[MAX_FILENAME];
 static int track_nSamples;
-static int track_invalid_frames;
 static int track_first_frame = -1;
 static time_t track_first_date_time = -1;
+static int track_first_invalid_frame = -1;
+static int track_last_invalid_frame = -1;
+static int track_invalid_frames = 0;
 static frame_info_t track_info;
 
 static struct option long_options[] = {
@@ -403,6 +412,7 @@ process_file(char *filename) {
 		if ((n = read(fd, next_buffer, FRAME_SIZE)) != FRAME_SIZE) {
 			switch (n) {
 			case -1:
+				close_track();
 				die("read failed");
 			case 0:
 				process_frame(buffer, &info, &info);// hack to handle last frame
@@ -589,7 +599,7 @@ process_frame(unsigned char *frame, frame_info_t *info, frame_info_t *next_info)
 		}
 	}
 	if (info->interpolate_flags & (0x40|0x20)) {
-		dp(1, "Frame %d warning interpolate flags set indicating audio contains errors\n", info->frame_number);
+		dp(2, "Frame %d warning interpolate flags set indicating audio contains errors\n", info->frame_number);
 		invalid_frame = 1;
 	}
 	if (track_fd != -1) {
@@ -628,7 +638,23 @@ process_frame(unsigned char *frame, frame_info_t *info, frame_info_t *next_info)
 	}
 	if (info->program_number != -1 && track_info.program_number == -1)
 		track_info.program_number = info->program_number;	
-	track_invalid_frames += invalid_frame;
+	if (invalid_frame) {
+		track_invalid_frames++;
+		if (track_first_invalid_frame == -1)
+			track_first_invalid_frame = info->frame_number;
+		track_last_invalid_frame = info->frame_number;
+	} else if (track_first_invalid_frame != -1) {
+		if (track_first_invalid_frame == track_last_invalid_frame)
+			fprintf(track_invalid_frames_fp, "Frame %d (", track_first_invalid_frame);
+		else
+			fprintf(track_invalid_frames_fp, "Frames %d-%d (", track_first_invalid_frame, track_last_invalid_frame);
+		print_frame_time(track_first_invalid_frame, track_invalid_frames_fp);
+		fprintf(track_invalid_frames_fp, "-");
+		print_frame_time(track_last_invalid_frame+1, track_invalid_frames_fp);
+		fprintf(track_invalid_frames_fp, ") invalid\n");
+		track_first_invalid_frame = -1;
+		track_last_invalid_frame = -1;
+	}
 
 	write_frame_audio(frame, info);
 	if (audio_seconds_read >= max_audio_seconds_read) {
@@ -730,6 +756,7 @@ write_frame_audio(unsigned char *frame, frame_info_t *info) {
 		break;
 	
 	default:
+		close_track();
 		die("internal error invalid track_sampling_frequency in write_frame_audio");
 	}
 	
@@ -786,7 +813,11 @@ open_track(frame_info_t *info) {
 	create_filename("wav", track_filename);
 	dp(1, "Creating %s\n", track_filename);
 	if ((track_fd = open(track_filename, O_CREAT|O_WRONLY|O_TRUNC, 0600)) < 0)
-		die("Can not open file");
+		die("Can not create  file %s", track_filename);
+	create_filename("invalid_frames", track_invalid_frames_filename);
+	dp(1, "Creating %s\n", track_invalid_frames_filename);
+	if ((track_invalid_frames_fp = fopen(track_invalid_frames_filename, "w")) == NULL)
+		die("Can not create file", track_invalid_frames_filename);
 	/*
 	 * header will be re-written when track is finished to add correct number of samples
 	 */ 
@@ -809,6 +840,7 @@ adjust_creation_time(char *filename) {
 void
 close_track() {
 	char new_track_filename[MAX_FILENAME];
+	char new_track_invalid_frames_filename[MAX_FILENAME];
 	double track_length = track_nSamples/(double)track_info.sampling_frequency;
 	if (track_fd == -1)
 		return;
@@ -826,6 +858,11 @@ close_track() {
 		close(track_fd);
 		if (unlink(track_filename) < 0)
 			die("unlink file");
+		if (track_invalid_frames_fp) {
+			fclose(track_invalid_frames_fp);
+			track_invalid_frames_fp = NULL;
+		}
+		unlink(track_invalid_frames_filename);
 	} else {
 		if (lseek(track_fd, SEEK_SET, 0) < 0)
 			die("Can not lseek track");
@@ -837,18 +874,47 @@ close_track() {
 			die("Can not write to file");
 		close(track_fd);
 		adjust_creation_time(track_filename);
-		write_track_details();
 		create_filename("wav", new_track_filename);
 		if (strcmp(track_filename, new_track_filename) != 0) {
 			dp(1, "Renaming %s to %s\n", track_filename, new_track_filename);
 			if (rename(track_filename, new_track_filename) != 0)
 				die("can not rename track filename");
 		}
+		write_track_details();
+		if (track_invalid_frames_fp) {
+			if (track_first_invalid_frame != -1) {		
+				if (track_first_invalid_frame == track_last_invalid_frame)
+					fprintf(track_invalid_frames_fp, "Frame %d (", track_first_invalid_frame);
+				else
+					fprintf(track_invalid_frames_fp, "Frames %d-%d (", track_first_invalid_frame, track_last_invalid_frame);
+				print_frame_time(track_first_invalid_frame, track_invalid_frames_fp);
+				fprintf(track_invalid_frames_fp, "-");
+				print_frame_time(track_last_invalid_frame+1, track_invalid_frames_fp);
+				fprintf(track_invalid_frames_fp, ") invalid\n");
+				track_first_invalid_frame = -1;
+				track_last_invalid_frame = -1;
+			}
+			fclose(track_invalid_frames_fp);
+			track_invalid_frames_fp = NULL;
+			if (!track_invalid_frames) {
+				unlink(track_invalid_frames_filename);
+			} else {
+				adjust_creation_time(track_invalid_frames_filename);
+				create_filename("invalid_frames", new_track_invalid_frames_filename);
+				if (strcmp(track_invalid_frames_filename, new_track_invalid_frames_filename) != 0) {
+					dp(1, "Renaming %s to %s\n", track_invalid_frames_filename, new_track_invalid_frames_filename);
+					if (rename(track_invalid_frames_filename, new_track_invalid_frames_filename) != 0)
+						die("can not rename track invalid frames filename");
+				}
+			}
+		}
 		track_number++;
 	}
 	track_fd = -1;
 	track_frame_count = -1;
 	track_first_date_time = -1;
+	track_first_invalid_frame = -1;
+	track_last_invalid_frame = -1;
 }
 
 /*
@@ -879,6 +945,31 @@ write_track_details() {
 	fclose(details_fp);
 	adjust_creation_time(details_filename);
 }	
+void
+print_frame_time(int frame_number, FILE *fp) {
+	int n,hours, minutes;
+	double seconds;
+	switch (track_info.sampling_frequency) {
+	case 48000:
+		n = SOUND_DATA_SIZE_48KHZ;
+		break;
+	case 44100:
+		n = SOUND_DATA_SIZE_44_1KHZ;
+		break;
+	case 32000:
+		n = SOUND_DATA_SIZE_32KHZ_PCM;
+		break;
+	default:
+		die("internal error invalid track_sampling_frequency in write_frame_audio");
+	}
+	seconds = (frame_number-track_first_frame)*((double)(n / (2 * track_info.nChannels)))/track_info.sampling_frequency;
+	hours = (int)seconds/3600;
+	seconds -= hours*3600;
+	minutes = (int)seconds/60;
+	seconds -= minutes*60;
+	fprintf(fp, "%d:%02d:%05.3f", hours, minutes, seconds);
+}
+
 
 /*
  * convert a BCD-encoded byte to decimal

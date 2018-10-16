@@ -468,10 +468,12 @@ parse_frame(unsigned char *frame, frame_info_t *info) {
 	int pack_index;
 	
 	info->invalid = 0;
-	info->program_number = -1;
-	info->date_time = -1;
 	info->nChannels = 2;
 	info->sampling_frequency = 48000;
+	info->encoding = encoding;
+	info->emphasis = emphasis;
+	info->date_time = -1;
+	info->program_number = -1;
 	info->hex_pno = hex_pno;
 	info->interpolate_flags = interpolate_flags;
 	
@@ -947,7 +949,7 @@ write_track_details() {
 }	
 void
 print_frame_time(int frame_number, FILE *fp) {
-	int n,hours, minutes;
+	int n=0,hours, minutes;
 	double seconds;
 	switch (track_info.sampling_frequency) {
 	case 48000:
